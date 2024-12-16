@@ -397,19 +397,20 @@ static const configSettings_t defaultConfigSettings = {
     .clockDivider = 4,
     .acquisitionCycles = 16,
     .oversampleRate = 1,
-    .sampleRate = 384000,
-    .sampleRateDivider = 8,
-    .sleepDuration = 5,
-    .recordDuration = 55,
+    .sampleRate = 250000,
+    .sampleRateDivider = 1,
+    .sleepDuration = 300,
+    .recordDuration = 60,
     .enableLED = 1,
-    .activeRecordingPeriods = 1,
-    .recordingPeriods = {
-        {.startMinutes = 0, .endMinutes = 0},
-        {.startMinutes = 0, .endMinutes = 0},
-        {.startMinutes = 0, .endMinutes = 0},
-        {.startMinutes = 0, .endMinutes = 0},
-        {.startMinutes = 0, .endMinutes = 0}
-    },
+    .sunRecordingMode = SUNRISE_AND_SUNSET_RECORDING,
+    .sunRecordingEvent = SR_SUNRISE_AND_SUNSET,
+    .latitude = 5177,
+    .longitude = -134,
+    .sunRoundingMinutes = 1,
+    .beforeSunriseMinutes = 30,
+    .afterSunriseMinutes = 120,
+    .beforeSunsetMinutes = 120,
+    .afterSunsetMinutes = 30,
     .timezoneHours = 0,
     .enableLowVoltageCutoff = 1,
     .disableBatteryLevelDisplay = 0,
@@ -423,8 +424,8 @@ static const configSettings_t defaultConfigSettings = {
     .lowerFilterFreq = 0,
     .higherFilterFreq = 0,
     .amplitudeThreshold = 0,
-    .requireAcousticConfiguration = 0,
-    .batteryLevelDisplayType = BATTERY_LEVEL,
+    .requireAcousticConfiguration = 1,
+    .batteryLevelDisplayType = NIMH_LIPO_BATTERY_VOLTAGE,
     .minimumTriggerDuration = 0,
     .enableAmplitudeThresholdDecibelScale = 0,
     .amplitudeThresholdDecibels = 0,
@@ -438,7 +439,7 @@ static const configSettings_t defaultConfigSettings = {
     .enableLowGainRange = 0,
     .enableFrequencyTrigger = 0,
     .enableDailyFolders = 0,
-    .enableSunRecording = 0
+    .enableSunRecording = 1
 };
 
 /* Persistent configuration data structure */
@@ -903,7 +904,7 @@ static bool writeConfigurationToFile(configSettings_t *configSettings, uint32_t 
 
     RETURN_BOOL_ON_ERROR(AudioMoth_writeToFile(configBuffer, length));
 
-    length = sprintf(configBuffer, "\r\n\r\nSample rate (Hz)                : %lu\r\n", configSettings->sampleRate / configSettings->sampleRateDivider);
+    length = sprintf(configBuffer, "\r\n\r\nSample rate (Hz)                : 48000, %lu\r\n", configSettings->sampleRate / configSettings->sampleRateDivider);
 
     static char *gainSettings[5] = {"Low", "Low-Medium", "Medium", "Medium-High", "High"};
 
@@ -967,7 +968,7 @@ static bool writeConfigurationToFile(configSettings_t *configSettings, uint32_t 
 
         length += sprintf(configBuffer + length, "\r\nSun recording mode              : ");
         
-        if (configSettings->sunRecordingEvent == 0) {
+        if (configSettings->sunRecordingEvent == SR_SUNRISE_AND_SUNSET) {
 
             length += sprintf(configBuffer + length, "%s", sunriseSunsetModes[configSettings->sunRecordingMode]);
 
@@ -977,9 +978,9 @@ static bool writeConfigurationToFile(configSettings_t *configSettings, uint32_t 
 
         }
 
-        char *sunriseText = configSettings->sunRecordingEvent == 0 ? "\r\nSunrise - before, after (mins)  " : "\r\nDawn - before, after (mins)     ";
+        char *sunriseText = configSettings->sunRecordingEvent == SR_SUNRISE_AND_SUNSET ? "\r\nSunrise - before, after (mins)  " : "\r\nDawn - before, after (mins)     ";
 
-        char *sunsetText = configSettings->sunRecordingEvent == 0 ? "\r\nSunset - before, after (mins)   " : "\r\nDusk - before, after (mins)     ";
+        char *sunsetText = configSettings->sunRecordingEvent == SR_SUNRISE_AND_SUNSET ? "\r\nSunset - before, after (mins)   " : "\r\nDusk - before, after (mins)     ";
 
         if (configSettings->sunRecordingMode == SUNRISE_RECORDING) {
 
@@ -1008,7 +1009,7 @@ static bool writeConfigurationToFile(configSettings_t *configSettings, uint32_t 
 
         }
 
-        char *roundingText = configSettings->sunRecordingEvent == 0 ? "\r\nSunrise/sunset rounding (mins)  : %u" : "\r\nDawn/dusk rounding (mins)       : %u";
+        char *roundingText = configSettings->sunRecordingEvent == SR_SUNRISE_AND_SUNSET ? "\r\nSunrise/sunset rounding (mins)  : %u" : "\r\nDawn/dusk rounding (mins)       : %u";
 
         length += sprintf(configBuffer + length, roundingText, configSettings->sunRoundingMinutes);
 
@@ -1278,7 +1279,9 @@ static recordingPeriod_t *secondSunRecordingPeriod = (recordingPeriod_t*)(AM_BAC
 
 static uint32_t *timeOfNextSunriseSunsetCalculation = (uint32_t*)(AM_BACKUP_DOMAIN_START_ADDRESS + 80);
 
-static configSettings_t *configSettings = (configSettings_t*)(AM_BACKUP_DOMAIN_START_ADDRESS + 84);
+static uint32_t *indexOfSunrise = (uint32_t*)(AM_BACKUP_DOMAIN_START_ADDRESS + 84);
+
+static configSettings_t *configSettings = (configSettings_t*)(AM_BACKUP_DOMAIN_START_ADDRESS + 88);
 
 /* Functions to query, set and clear backup domain flags */
 
@@ -1336,6 +1339,10 @@ static bool writeIndicator[NUMBER_OF_BUFFERS];
 
 static int16_t compressionBuffer[COMPRESSION_BUFFER_SIZE_IN_BYTES / NUMBER_OF_BYTES_IN_SAMPLE];
 
+/* Temporary configuration settings */
+
+static configSettings_t tempConfigSettings;
+
 /* GPS fix variables */
 
 static bool gpsEnableLED;
@@ -1386,9 +1393,9 @@ static int16_t secondaryBuffer[MAXIMUM_SAMPLES_IN_DMA_TRANSFER];
 
 /* Firmware version and description */
 
-static uint8_t firmwareVersion[AM_FIRMWARE_VERSION_LENGTH] = {1, 11, 0};
+static uint8_t firmwareVersion[AM_FIRMWARE_VERSION_LENGTH] = {1, 0, 0};
 
-static uint8_t firmwareDescription[AM_FIRMWARE_DESCRIPTION_LENGTH] = "AudioMoth-Firmware-Basic";
+static uint8_t firmwareDescription[AM_FIRMWARE_DESCRIPTION_LENGTH] = "AudioMoth-Wytham-Woods";
 
 /* Function prototypes */
 
@@ -1404,15 +1411,7 @@ static void determineSunriseAndSunsetTimes(uint32_t currentTime);
 
 static void flashLedToIndicateBatteryLife(void);
 
-/* Functions of copy to and from the backup domain */
-
-static void copyFromBackupDomain(uint8_t *dst, uint32_t *src, uint32_t length) {
-
-    for (uint32_t i = 0; i < length; i += 1) {
-        *(dst + i) = *((uint8_t*)src + i);
-    }
-
-}
+/* Functions of copy to the backup domain */
 
 static void copyToBackupDomain(uint32_t *dst, uint8_t *src, uint32_t length) {
 
@@ -1636,19 +1635,9 @@ int main(void) {
 
         copyToBackupDomain((uint32_t*)deploymentID, (uint8_t*)defaultDeploymentID, DEPLOYMENT_ID_LENGTH);
 
-        /* Check the persistent configuration */
+        /* Copy default configuration */
 
-        persistentConfigSettings_t *persistentConfigSettings = (persistentConfigSettings_t*)AM_FLASH_USER_DATA_ADDRESS;
-
-        if (memcmp(persistentConfigSettings->firmwareVersion, firmwareVersion, AM_FIRMWARE_VERSION_LENGTH) == 0 && memcmp(persistentConfigSettings->firmwareDescription, firmwareDescription, AM_FIRMWARE_DESCRIPTION_LENGTH) == 0) {
-
-            copyToBackupDomain((uint32_t*)configSettings, (uint8_t*)&persistentConfigSettings->configSettings, sizeof(configSettings_t));
-
-        } else {
-
-            copyToBackupDomain((uint32_t*)configSettings, (uint8_t*)&defaultConfigSettings, sizeof(configSettings_t));
-
-        }
+        copyToBackupDomain((uint32_t*)configSettings, (uint8_t*)&defaultConfigSettings, sizeof(configSettings_t));
 
     }
 
@@ -1681,6 +1670,10 @@ int main(void) {
     bool fileSystemEnabled = false;
 
     if (switchPosition != *previousSwitchPosition) {
+
+        /* Copy default configuration */
+
+        copyToBackupDomain((uint32_t*)configSettings, (uint8_t*)&defaultConfigSettings, sizeof(configSettings_t));
 
         /* Reset the GPS flags */
 
@@ -2606,105 +2599,9 @@ inline void AudioMoth_usbFirmwareDescriptionRequested(uint8_t **firmwareDescript
 
 }
 
-inline void AudioMoth_usbApplicationPacketRequested(uint32_t messageType, uint8_t *transmitBuffer, uint32_t size) {
+inline void AudioMoth_usbApplicationPacketRequested(uint32_t messageType, uint8_t *transmitBuffer, uint32_t size) { }
 
-    /* Copy the current time to the USB packet */
-
-    uint32_t currentTime;
-
-    AudioMoth_getTime(&currentTime, NULL);
-
-    memcpy(transmitBuffer + 1, &currentTime, UINT32_SIZE_IN_BYTES);
-
-    /* Copy the unique ID to the USB packet */
-
-    memcpy(transmitBuffer + 5, (uint8_t*)AM_UNIQUE_ID_START_ADDRESS, AM_UNIQUE_ID_SIZE_IN_BYTES);
-
-    /* Copy the battery state to the USB packet */
-
-    uint32_t supplyVoltage = AudioMoth_getSupplyVoltage();
-
-    AM_batteryState_t batteryState = AudioMoth_getBatteryState(supplyVoltage);
-
-    memcpy(transmitBuffer + 5 + AM_UNIQUE_ID_SIZE_IN_BYTES, &batteryState, 1);
-
-    /* Copy the firmware version to the USB packet */
-
-    memcpy(transmitBuffer + 6 + AM_UNIQUE_ID_SIZE_IN_BYTES, firmwareVersion, AM_FIRMWARE_VERSION_LENGTH);
-
-    /* Copy the firmware description to the USB packet */
-
-    memcpy(transmitBuffer + 6 + AM_UNIQUE_ID_SIZE_IN_BYTES + AM_FIRMWARE_VERSION_LENGTH, firmwareDescription, AM_FIRMWARE_DESCRIPTION_LENGTH);
-
-}
-
-inline void AudioMoth_usbApplicationPacketReceived(uint32_t messageType, uint8_t* receiveBuffer, uint8_t *transmitBuffer, uint32_t size) {
-
-    /* Make persistent configuration settings data structure */
-
-    static persistentConfigSettings_t persistentConfigSettings __attribute__ ((aligned(UINT32_SIZE_IN_BYTES)));
-
-    memcpy(&persistentConfigSettings.firmwareVersion, &firmwareVersion, AM_FIRMWARE_VERSION_LENGTH);
-
-    memcpy(&persistentConfigSettings.firmwareDescription, &firmwareDescription, AM_FIRMWARE_DESCRIPTION_LENGTH);
-
-    memcpy(&persistentConfigSettings.configSettings, receiveBuffer + 1,  sizeof(configSettings_t));
-
-    /* Implement energy saver mode changes */
-
-    if (isEnergySaverMode(&persistentConfigSettings.configSettings)) {
-
-        persistentConfigSettings.configSettings.sampleRate /= 2;
-        persistentConfigSettings.configSettings.clockDivider /= 2;
-        persistentConfigSettings.configSettings.sampleRateDivider /= 2;
-
-    }
-
-    /* Copy persistent configuration settings to flash */
-
-    uint32_t numberOfBytes = ROUND_UP_TO_MULTIPLE(sizeof(persistentConfigSettings_t), UINT32_SIZE_IN_BYTES);
-
-    bool success = AudioMoth_writeToFlashUserDataPage((uint8_t*)&persistentConfigSettings, numberOfBytes);
-
-    if (success) {
-
-        /* Copy the USB packet contents to the back-up register data structure location */
-
-        copyToBackupDomain((uint32_t*)configSettings, (uint8_t*)&persistentConfigSettings.configSettings, sizeof(configSettings_t));
-
-        /* Copy the back-up register data structure to the USB packet */
-
-        copyFromBackupDomain(transmitBuffer + 1, (uint32_t*)configSettings, sizeof(configSettings_t));
-
-        /* Revert energy saver mode changes */
-
-        configSettings_t *tempConfigSettings = (configSettings_t*)(transmitBuffer + 1);
-
-        if (isEnergySaverMode(tempConfigSettings)) {
-
-            tempConfigSettings->sampleRate *= 2;
-            tempConfigSettings->clockDivider *= 2;
-            tempConfigSettings->sampleRateDivider *= 2;
-
-        }    
-
-        /* Set the time */
-
-        AudioMoth_setTime(configSettings->time, USB_CONFIG_TIME_CORRECTION);
-
-        /* Blink the green LED */
-
-        AudioMoth_blinkDuringUSB(USB_CONFIGURATION_BLINK);
-
-    } else {
-
-        /* Return blank configuration as error indicator */
-
-        memset(transmitBuffer + 1, 0, sizeof(configSettings_t));
-
-    }
-
-}
+inline void AudioMoth_usbApplicationPacketReceived(uint32_t messageType, uint8_t* receiveBuffer, uint8_t *transmitBuffer, uint32_t size) { }
 
 /* Audio configuration handlers */
 
@@ -3351,6 +3248,31 @@ static void determineSunriseAndSunsetTimesAndScheduleRecording(uint32_t currentT
 
     }
 
+    /* Set the sample rate for the next recording */
+
+    if (configSettings->enableSunRecording) {
+
+        if (*indexOfSunrise == *indexOfNextRecording) {
+
+            /* Sunrise settings - 48000 Hz */
+
+            memcpy((uint8_t*)&tempConfigSettings, &defaultConfigSettings, sizeof(configSettings_t));
+
+            tempConfigSettings.sampleRate = 384000;
+            tempConfigSettings.sampleRateDivider = 8;
+
+            copyToBackupDomain((uint32_t*)configSettings, (uint8_t*)&tempConfigSettings, sizeof(configSettings_t));
+
+        } else {
+
+            /* Copy default configuration */
+
+            copyToBackupDomain((uint32_t*)configSettings, (uint8_t*)&defaultConfigSettings, sizeof(configSettings_t));
+
+        }
+
+    }
+
     /* Finished if not using GPS */
 
     if (configSettings->enableTimeSettingFromGPS == false) return;
@@ -3497,6 +3419,8 @@ static void determineSunriseAndSunsetTimes(uint32_t currentTime) {
 
         /* Recording from before sunrise to after sunrise */
 
+        *indexOfSunrise = 0;
+
         *numberOfSunRecordingPeriods = 1;
 
         tempRecordingPeriod.startMinutes = beforeSunrise;
@@ -3508,6 +3432,8 @@ static void determineSunriseAndSunsetTimes(uint32_t currentTime) {
     } else if (configSettings->sunRecordingMode == SUNSET_RECORDING) {
 
         /* Recording from before sunset to after sunset */
+
+        *indexOfSunrise = 1;
 
         *numberOfSunRecordingPeriods = 1;
 
@@ -3539,6 +3465,8 @@ static void determineSunriseAndSunsetTimes(uint32_t currentTime) {
 
         if (firstPeriodWraps) {
 
+            *indexOfSunrise = 1;
+
             *numberOfSunRecordingPeriods = 1;
 
             tempRecordingPeriod.startMinutes = firstPeriodStartMinutes;
@@ -3548,6 +3476,8 @@ static void determineSunriseAndSunsetTimes(uint32_t currentTime) {
             copyToBackupDomain((uint32_t*)firstSunRecordingPeriod, (uint8_t*)&tempRecordingPeriod, sizeof(recordingPeriod_t));
 
         } else if (secondPeriodStartMinutes <= firstPeriodEndMinutes) {
+
+            *indexOfSunrise = 1;
 
             *numberOfSunRecordingPeriods = 1;
 
@@ -3559,6 +3489,8 @@ static void determineSunriseAndSunsetTimes(uint32_t currentTime) {
 
         } else if (secondPeriodWraps && secondPeriodEndMinutes >= firstPeriodStartMinutes) {
 
+            *indexOfSunrise = 1;
+
             *numberOfSunRecordingPeriods = 1;
 
             tempRecordingPeriod.startMinutes = secondPeriodStartMinutes;
@@ -3568,6 +3500,8 @@ static void determineSunriseAndSunsetTimes(uint32_t currentTime) {
             copyToBackupDomain((uint32_t*)firstSunRecordingPeriod, (uint8_t*)&tempRecordingPeriod, sizeof(recordingPeriod_t));
 
         } else {
+
+            *indexOfSunrise = beforeSunrise < beforeSunset ? 0 : 1;
 
             *numberOfSunRecordingPeriods = 2;
 
@@ -3633,6 +3567,8 @@ static void determineSunriseAndSunsetTimes(uint32_t currentTime) {
 
         /* Recording from before sunset to after sunrise */
 
+        *indexOfSunrise = 1;
+
         *numberOfSunRecordingPeriods = 1;
 
         tempRecordingPeriod.startMinutes = beforeSunset;
@@ -3662,6 +3598,8 @@ static void determineSunriseAndSunsetTimes(uint32_t currentTime) {
     } else if (configSettings->sunRecordingMode == SUNRISE_TO_SUNSET_RECORDING) {
 
         /* Recording from before sunrise to after sunset */
+
+        *indexOfSunrise = 0;
 
         *numberOfSunRecordingPeriods = 1;
 
