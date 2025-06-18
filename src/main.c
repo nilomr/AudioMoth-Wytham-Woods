@@ -463,7 +463,7 @@ static const configSettings_t defaultConfigSettings = {
     .latitude = 5177,
     .longitude = -134,
     .sunRoundingMinutes = 1,
-    .beforeSunriseMinutes = 30,
+    .beforeSunriseMinutes = 80,
     .afterSunriseMinutes = 120,
     .beforeSunsetMinutes = 120,
     .afterSunsetMinutes = 30,
@@ -3448,10 +3448,46 @@ static void determineSunriseAndSunsetTimesAndScheduleRecording(uint32_t currentT
     if (configSettings->enableSunRecording)
     {
 
-        if (*indexOfSunrise == *indexOfNextRecording)
+        bool isNighttimeRecording = false;
+
+        /* Determine if this is a nighttime recording (after sunset, before pre-sunrise) */
+        if (configSettings->sunRecordingMode == SUNSET_TO_SUNRISE_RECORDING)
+        {
+            /* In sunset-to-sunrise mode, all recordings are nighttime except around sunrise */
+            isNighttimeRecording = (*indexOfSunrise != *indexOfNextRecording);
+        }
+        else if (configSettings->sunRecordingMode == SUNRISE_AND_SUNSET_RECORDING)
+        {
+            /* In sunrise-and-sunset mode, check if we're in the sunset period */
+            isNighttimeRecording = (*indexOfSunrise != *indexOfNextRecording);
+        }
+        else if (configSettings->sunRecordingMode == SUNSET_RECORDING)
+        {
+            /* Pure sunset recording - this would be 192 kHz */
+            isNighttimeRecording = true;
+        }
+        else
+        {
+            /* Sunrise-only or sunrise-to-sunset modes use 48 kHz */
+            isNighttimeRecording = false;
+        }
+
+        if (isNighttimeRecording)
         {
 
-            /* Sunrise settings - 48000 Hz */
+            /* Nighttime settings - 192000 Hz */
+
+            memcpy((uint8_t *)&tempConfigSettings, &defaultConfigSettings, sizeof(configSettings_t));
+
+            tempConfigSettings.sampleRate = 192000;
+            tempConfigSettings.sampleRateDivider = 1;
+
+            copyToBackupDomain((uint32_t *)configSettings, (uint8_t *)&tempConfigSettings, sizeof(configSettings_t));
+        }
+        else
+        {
+
+            /* Daytime/sunrise settings - 48000 Hz */
 
             memcpy((uint8_t *)&tempConfigSettings, &defaultConfigSettings, sizeof(configSettings_t));
 
@@ -3459,13 +3495,6 @@ static void determineSunriseAndSunsetTimesAndScheduleRecording(uint32_t currentT
             tempConfigSettings.sampleRateDivider = 8;
 
             copyToBackupDomain((uint32_t *)configSettings, (uint8_t *)&tempConfigSettings, sizeof(configSettings_t));
-        }
-        else
-        {
-
-            /* Copy default configuration */
-
-            copyToBackupDomain((uint32_t *)configSettings, (uint8_t *)&defaultConfigSettings, sizeof(configSettings_t));
         }
     }
 
