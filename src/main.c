@@ -396,6 +396,8 @@ typedef struct
             uint16_t afterSunriseMinutes : 10;
             uint16_t beforeSunsetMinutes : 10;
             uint16_t afterSunsetMinutes : 10;
+            uint16_t nighttimeBeforeSunsetMinutes : 10;
+            uint16_t nighttimeAfterSunsetMinutes : 10;
         };
     };
     int8_t timezoneHours;
@@ -408,6 +410,7 @@ typedef struct
     uint8_t gpsTimeSettingPeriod : 4;
     uint32_t earliestRecordingTime;
     uint32_t latestRecordingTime;
+    uint32_t nighttimeSampleRateChangeTime;
     uint16_t lowerFilterFreq;
     uint16_t higherFilterFreq;
     union
@@ -467,6 +470,8 @@ static const configSettings_t defaultConfigSettings = {
     .afterSunriseMinutes = 120,
     .beforeSunsetMinutes = 120,
     .afterSunsetMinutes = 30,
+    .nighttimeBeforeSunsetMinutes = 660, // 11 hours
+    .nighttimeAfterSunsetMinutes = 180,
     .timezoneHours = 0,
     .enableLowVoltageCutoff = 1,
     .disableBatteryLevelDisplay = 0,
@@ -477,6 +482,7 @@ static const configSettings_t defaultConfigSettings = {
     .gpsTimeSettingPeriod = 0,
     .earliestRecordingTime = 0,
     .latestRecordingTime = 0,
+    .nighttimeSampleRateChangeTime = 1751194800, // Sun Jun 29 2025 11:00:00 GMT+0000
     .lowerFilterFreq = 0,
     .higherFilterFreq = 0,
     .amplitudeThreshold = 0,
@@ -1309,6 +1315,34 @@ static bool writeConfigurationToFile(configSettings_t *configSettings, uint32_t 
 
         length += sprintf(configBuffer + length, "-");
     }
+    
+    if (configSettings->nighttimeSampleRateChangeTime == 0)
+    {
+
+        length += sprintf(configBuffer + length, "\r\nNighttime sample rate change    : ----------");
+    }
+    else
+    {
+
+        time_t rawTime = configSettings->nighttimeSampleRateChangeTime + timezoneOffset;
+
+        gmtime_r(&rawTime, &time);
+
+        if (time.tm_hour == 0 && time.tm_min == 0 && time.tm_sec == 0)
+        {
+
+            length += sprintf(configBuffer + length, "\r\nNighttime sample rate change    : ");
+
+            length += sprintf(configBuffer + length, "%04d-%02d-%02d (%s)", YEAR_OFFSET + time.tm_year, MONTH_OFFSET + time.tm_mon, time.tm_mday, timezoneBuffer);
+        }
+        else
+        {
+
+            length += sprintf(configBuffer + length, "\r\nNighttime sample rate change    : ");
+
+            length += sprintf(configBuffer + length, "%04d-%02d-%02d %02d:%02d:%02d (%s)", YEAR_OFFSET + time.tm_year, MONTH_OFFSET + time.tm_mon, time.tm_mday, time.tm_hour, time.tm_min, time.tm_sec, timezoneBuffer);
+        }
+    }
 
     RETURN_BOOL_ON_ERROR(AudioMoth_writeToFile(configBuffer, length));
 
@@ -1526,7 +1560,7 @@ static int16_t secondaryBuffer[MAXIMUM_SAMPLES_IN_DMA_TRANSFER];
 
 static uint8_t firmwareVersion[AM_FIRMWARE_VERSION_LENGTH] = {1, 0, 0};
 
-static uint8_t firmwareDescription[AM_FIRMWARE_DESCRIPTION_LENGTH] = "AudioMoth-Wytham-Woods";
+static uint8_t firmwareDescription[AM_FIRMWARE_DESCRIPTION_LENGTH] = "AudioMoth-Wytham-Woods-Inact";
 
 /* Function prototypes */
 
@@ -2012,7 +2046,6 @@ int main(void)
                     *startOfRecordingPeriod = UINT32_MAX;
 
                     *durationOfNextRecording = UINT32_MAX;
-
                     *timeOfNextGPSTimeSetting = UINT32_MAX;
                 }
                 else
@@ -3402,6 +3435,18 @@ static void determineSunriseAndSunsetTimesAndScheduleRecording(uint32_t currentT
 
     uint32_t currentStartOfRecordingPeriod = *startOfRecordingPeriod;
 
+    /* Check if we need to recalculate due to crossing nighttime sample rate change time */
+    static uint32_t lastNighttimeCheckTime = 0;
+    bool crossedNighttimeThreshold = false;
+    
+    if (configSettings->nighttimeSampleRateChangeTime > 0 && lastNighttimeCheckTime > 0)
+    {
+        bool wasBeforeThreshold = lastNighttimeCheckTime < configSettings->nighttimeSampleRateChangeTime;
+        bool isAfterThreshold = currentTime >= configSettings->nighttimeSampleRateChangeTime;
+        crossedNighttimeThreshold = wasBeforeThreshold && isAfterThreshold;
+    }
+    lastNighttimeCheckTime = currentTime;
+
     /* Calculate initial sunrise and sunset time if appropriate */
 
     if (configSettings->enableSunRecording && *timeOfNextSunriseSunsetCalculation == 0)
@@ -3428,7 +3473,7 @@ static void determineSunriseAndSunsetTimesAndScheduleRecording(uint32_t currentT
 
     /* Check if sunrise and sunset should be recalculated */
 
-    if (configSettings->enableSunRecording && *timeOfNextRecording >= *timeOfNextSunriseSunsetCalculation)
+    if (configSettings->enableSunRecording && (*timeOfNextRecording >= *timeOfNextSunriseSunsetCalculation || crossedNighttimeThreshold))
     {
 
         scheduleTime = MAX(scheduleTime, *timeOfNextSunriseSunsetCalculation);
@@ -3479,8 +3524,17 @@ static void determineSunriseAndSunsetTimesAndScheduleRecording(uint32_t currentT
 
             memcpy((uint8_t *)&tempConfigSettings, &defaultConfigSettings, sizeof(configSettings_t));
 
-            tempConfigSettings.sampleRate = 192000;
-            tempConfigSettings.sampleRateDivider = 1;
+            /* Check if nighttime sample rate change should be active */
+            if (configSettings->nighttimeSampleRateChangeTime == 0 || currentTime >= configSettings->nighttimeSampleRateChangeTime)
+            {
+                tempConfigSettings.sampleRate = 192000;
+                tempConfigSettings.sampleRateDivider = 1;
+            }
+            else
+            {
+                tempConfigSettings.sampleRate = 384000;
+                tempConfigSettings.sampleRateDivider = 8;
+            }
 
             copyToBackupDomain((uint32_t *)configSettings, (uint8_t *)&tempConfigSettings, sizeof(configSettings_t));
         }
@@ -3642,9 +3696,22 @@ static void determineSunriseAndSunsetTimes(uint32_t currentTime)
 
     uint32_t afterSunrise = (MINUTES_IN_DAY + roundedSunriseMinutes + configSettings->afterSunriseMinutes) % MINUTES_IN_DAY;
 
-    uint32_t beforeSunset = (MINUTES_IN_DAY + roundedSunsetMinutes - configSettings->beforeSunsetMinutes) % MINUTES_IN_DAY;
+    /* Use different sunset parameters based on nighttime sample rate change time */
+    uint32_t beforeSunsetMinutes, afterSunsetMinutes;
+    if (configSettings->nighttimeSampleRateChangeTime == 0 || currentTime >= configSettings->nighttimeSampleRateChangeTime)
+    {
+        beforeSunsetMinutes = configSettings->nighttimeBeforeSunsetMinutes;
+        afterSunsetMinutes = configSettings->nighttimeAfterSunsetMinutes;
+    }
+    else
+    {
+        beforeSunsetMinutes = configSettings->beforeSunsetMinutes;
+        afterSunsetMinutes = configSettings->afterSunsetMinutes;
+    }
 
-    uint32_t afterSunset = (MINUTES_IN_DAY + roundedSunsetMinutes + configSettings->afterSunsetMinutes) % MINUTES_IN_DAY;
+    uint32_t beforeSunset = (MINUTES_IN_DAY + roundedSunsetMinutes - beforeSunsetMinutes) % MINUTES_IN_DAY;
+
+    uint32_t afterSunset = (MINUTES_IN_DAY + roundedSunsetMinutes + afterSunsetMinutes) % MINUTES_IN_DAY;
 
     /* Determine schedule */
 
@@ -3865,7 +3932,7 @@ static void determineSunriseAndSunsetTimes(uint32_t currentTime)
             timeFromSunriseToSunset = roundedSunsetMinutes < roundedSunriseMinutes ? MINUTES_IN_DAY + roundedSunsetMinutes - roundedSunriseMinutes : roundedSunsetMinutes - roundedSunriseMinutes;
         }
 
-        uint32_t duration = timeFromSunriseToSunset + configSettings->beforeSunriseMinutes + configSettings->afterSunsetMinutes;
+        uint32_t duration = timeFromSunriseToSunset + configSettings->beforeSunriseMinutes + afterSunsetMinutes;
 
         if (duration == 0)
             duration = 1;
