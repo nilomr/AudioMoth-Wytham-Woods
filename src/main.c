@@ -468,10 +468,10 @@ static const configSettings_t defaultConfigSettings = {
     .sunRoundingMinutes = 1,
     .beforeSunriseMinutes = 80,
     .afterSunriseMinutes = 120,
-    .beforeSunsetMinutes = 120,
-    .afterSunsetMinutes = 30,
-    .nighttimeBeforeSunsetMinutes = 660, // 11 hours
-    .nighttimeAfterSunsetMinutes = 180,
+    .beforeSunsetMinutes = 60,
+    .afterSunsetMinutes = 40,
+    .nighttimeBeforeSunsetMinutes = 15,
+    .nighttimeAfterSunsetMinutes = 165,
     .timezoneHours = 0,
     .enableLowVoltageCutoff = 1,
     .disableBatteryLevelDisplay = 0,
@@ -482,7 +482,7 @@ static const configSettings_t defaultConfigSettings = {
     .gpsTimeSettingPeriod = 0,
     .earliestRecordingTime = 0,
     .latestRecordingTime = 0,
-    .nighttimeSampleRateChangeTime = 1751194800, // Sun Jun 29 2025 11:00:00 GMT+0000
+    .nighttimeSampleRateChangeTime = 1752573600, // Tue Jul 15 2025 10:00:00 GMT+0000
     .lowerFilterFreq = 0,
     .higherFilterFreq = 0,
     .amplitudeThreshold = 0,
@@ -1558,9 +1558,9 @@ static int16_t secondaryBuffer[MAXIMUM_SAMPLES_IN_DMA_TRANSFER];
 
 /* Firmware version and description */
 
-static uint8_t firmwareVersion[AM_FIRMWARE_VERSION_LENGTH] = {1, 0, 0};
+static uint8_t firmwareVersion[AM_FIRMWARE_VERSION_LENGTH] = {1, 1, 0};
 
-static uint8_t firmwareDescription[AM_FIRMWARE_DESCRIPTION_LENGTH] = "AudioMoth-Wytham-Woods-Inact";
+static uint8_t firmwareDescription[AM_FIRMWARE_DESCRIPTION_LENGTH] = "AudioMoth-Wytham-Woods";
 
 /* Function prototypes */
 
