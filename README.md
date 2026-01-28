@@ -19,6 +19,10 @@ This generates the following output files:
 - `audiomoth.axf` (ELF executable)
 - `audiomoth.lst` (disassembly listing)
 
+## Flashing
+
+For instructions on how to flash this custom firmware to the AudioMoth device, see: https://www.openacousticdevices.info/flashing
+
 ## Cleaning
 
 Run `make clean` in the `build` directory to remove build artifacts.
